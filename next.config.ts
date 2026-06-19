@@ -13,14 +13,12 @@ if (!process.env.SECRET_KEY) {
 }
 
 const nextConfig: NextConfig = {
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   turbopack: {
     resolveAlias: {
       canvas: './empty.js',
     },
   },
+
   webpack: (config) => {
     // Remove the 'canvas' module from the webpack configuration
     config.resolve.alias = {

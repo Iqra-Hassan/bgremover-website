@@ -34,4 +34,5 @@
     "[typescriptreact]": {
         "editor.defaultFormatter": "esbenp.prettier-vscode"
     },
+    "git.ignoreLimitWarning": true,
 }
