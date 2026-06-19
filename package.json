@@ -70,7 +70,7 @@
     "moment-timezone": "^0.6.0",
     "motion": "^12.22.0",
     "nanoid": "^5.1.5",
-    "next": "15.3.2",
+    "next": "^16.2.9",
     "next-themes": "^0.4.6",
     "nextjs-toploader": "^3.8.16",
     "nodemailer": "^7.0.3",
