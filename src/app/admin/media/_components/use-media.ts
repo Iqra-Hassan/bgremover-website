@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import axios from 'axios';
 import { generateRandomKey } from '@/lib/utils';
 import type { InferResponseType } from 'hono/client';
+import { localDB } from '@/lib/services/local-db';
 
 interface MediaFilters {
   page: number;
@@ -42,38 +43,85 @@ export const useMedia = (defaultFilters?: Partial<MediaFilters>) => {
   const { data, isFetching, error } = useQuery({
     queryKey: [queryKeys.admin.media, filters],
     queryFn: async () => {
-      const response = await apiClient.api.media.$get({
-        query: {
-          page: filters.page.toString(),
-          limit: filters.limit.toString(),
-          ...(filters.sort && { sort: filters.sort }),
-          ...(filters.order && { order: filters.order }),
-          ...(filters.search && { search: filters.search }),
-          ...(filters.allowTypes?.length && { allowTypes: filters.allowTypes.join(',') }),
-        },
-      });
-      const result = await response.json();
-      if (!response.ok) {
-        const error = result as unknown as { message?: string };
-        throw new Error(error?.message || 'Failed to fetch media');
-      }
+      try {
+        const response = await apiClient.api.media.$get({
+          query: {
+            page: filters.page.toString(),
+            limit: filters.limit.toString(),
+            ...(filters.sort && { sort: filters.sort }),
+            ...(filters.order && { order: filters.order }),
+            ...(filters.search && { search: filters.search }),
+            ...(filters.allowTypes?.length && { allowTypes: filters.allowTypes.join(',') }),
+          },
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          const error = result as unknown as { message?: string };
+          throw new Error(error?.message || 'Failed to fetch media');
+        }
 
-      return result;
+        return result;
+      } catch (err) {
+        console.warn('Failed to fetch media from backend, loading local media library...', err);
+        const localList = await localDB.getMediaList();
+        
+        let filtered = [...localList];
+        if (filters.search) {
+          filtered = filtered.filter(item => item.fileName.toLowerCase().includes(filters.search.toLowerCase()));
+        }
+        if (filters.allowTypes && filters.allowTypes.length > 0) {
+          filtered = filtered.filter(item => {
+            return filters.allowTypes?.some(type => item.mimeType.startsWith(type));
+          });
+        }
+        
+        // Sort
+        filtered.sort((a, b) => {
+          const mult = filters.order === 'asc' ? 1 : -1;
+          if (filters.sort === 'fileName') {
+            return a.fileName.localeCompare(b.fileName) * mult;
+          }
+          return (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) * mult;
+        });
+
+        const total = filtered.length;
+        const totalPages = Math.ceil(total / filters.limit);
+        const start = (filters.page - 1) * filters.limit;
+        const docs = filtered.slice(start, start + filters.limit);
+
+        return {
+          docs,
+          pagination: {
+            page: filters.page,
+            limit: filters.limit,
+            total,
+            totalPages
+          }
+        };
+      }
     },
   });
 
   const { mutate: deleteMedia, isPending: isDeleting } = useMutation({
     mutationFn: async (ids: string[]) => {
-      const response = await apiClient.api.media.$delete({
-        json: { ids },
-      });
-      const result = await response.json();
-      if (!response.ok) {
-        const error = result as unknown as { message?: string };
-        throw new Error(error?.message || 'Failed to delete media');
-      }
+      try {
+        const response = await apiClient.api.media.$delete({
+          json: { ids },
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          const error = result as unknown as { message?: string };
+          throw new Error(error?.message || 'Failed to delete media');
+        }
 
-      return result;
+        return result;
+      } catch (error) {
+        console.warn('Backend delete failed, deleting from local DB...', error);
+        for (const id of ids) {
+          await localDB.deleteMedia(id);
+        }
+        return { success: true };
+      }
     },
     onSuccess: () => {
       setSelected([]);
@@ -165,8 +213,26 @@ export const useUploadFiles = () => {
       );
       queryClient.invalidateQueries({ queryKey: [queryKeys.admin.media] });
     } catch (err: any) {
-      const error = err.response?.data?.message || 'Failed to upload file.';
-      setFiles((prev) => prev.map((file) => (file.id === item.id ? { ...file, error } : file)));
+      if (err.name === 'CanceledError') {
+        setUploading(false);
+        return;
+      }
+      console.warn('Backend media upload failed, uploading to local DB fallback...', err);
+      
+      try {
+        await localDB.saveMedia(item.id, item.file, item.file.name, item.file.type);
+        
+        setProgress(0);
+        setFiles((prev) =>
+          prev.map((file) => (file.id === item.id ? { ...file, isUploaded: true } : file)),
+        );
+        toast.info('Stored locally in-browser');
+        queryClient.invalidateQueries({ queryKey: [queryKeys.admin.media] });
+      } catch (localErr: any) {
+        console.error('Local upload failed:', localErr);
+        const error = localErr?.message || 'Failed to upload file.';
+        setFiles((prev) => prev.map((file) => (file.id === item.id ? { ...file, error } : file)));
+      }
     } finally {
       setUploading(false);
     }

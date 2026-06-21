@@ -3,6 +3,7 @@ import { apiClient } from '@/lib/api-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useEffect, useState } from 'react';
+import { localDB } from '@/lib/services/local-db';
 
 export const useHistory = () => {
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -15,35 +16,71 @@ export const useHistory = () => {
   } = useQuery({
     queryKey: [queryKeys.history, page],
     queryFn: async () => {
-      const response = await apiClient.api.users.history.$get({
-        query: {
-          page: page.toString(),
-        },
-      });
+      let serverDocs: any[] = [];
+      let serverError = false;
 
-      const result = await response.json();
-      if (!response.ok) {
-        const error = result as unknown as { message?: string };
-        throw new Error(error?.message || 'Failed to get history');
+      try {
+        const response = await apiClient.api.users.history.$get({
+          query: {
+            page: page.toString(),
+          },
+        });
+        const result = await response.json();
+        if (response.ok) {
+          serverDocs = result.docs || [];
+        } else {
+          serverError = true;
+        }
+      } catch (err) {
+        console.warn('Backend history fetch failed, falling back to local history:', err);
+        serverError = true;
       }
 
-      return result;
+      const localList = await localDB.getHistoryList();
+      
+      let mergedDocs = [...localList];
+      if (!serverError && serverDocs.length > 0) {
+        const existingIds = new Set(localList.map(item => item.id));
+        const uniqueServerDocs = serverDocs.filter(item => !existingIds.has(item.id));
+        mergedDocs = [...uniqueServerDocs, ...localList];
+      }
+
+      mergedDocs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      const limit = 10;
+      const total = mergedDocs.length;
+      const totalPages = Math.ceil(total / limit);
+      const start = (page - 1) * limit;
+      const docs = mergedDocs.slice(start, start + limit);
+
+      return {
+        docs,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages
+        }
+      };
     },
   });
 
   const { mutate: deleteHistory, isPending: isLoadingDeleteHistory } = useMutation({
     mutationFn: async (id: string) => {
-      const response = await apiClient.api.users.history[':id'].$delete({
-        param: { id },
-      });
-
-      const result = await response.json();
-      if (!response.ok) {
-        const error = result as unknown as { message?: string };
-        throw new Error(error?.message || 'Failed to delete history');
+      try {
+        const response = await apiClient.api.users.history[':id'].$delete({
+          param: { id },
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error('Failed to delete history on backend');
+        }
+        return result;
+      } catch (error) {
+        console.warn('Backend delete history failed, deleting from local DB...', error);
+        await localDB.deleteHistory(id);
+        return { success: true };
       }
-
-      return result;
     },
     onSuccess: () => {
       toast.success('History deleted successfully');

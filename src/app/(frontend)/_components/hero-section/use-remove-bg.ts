@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/data/constans';
 import { useAuth } from '@/components/auth-provider';
 import { apiClient } from '@/lib/api-client';
+import { localDB } from '@/lib/services/local-db';
 
 export const useRemoveBg = () => {
   const { user } = useAuth();
@@ -77,15 +78,34 @@ export const useRemoveBg = () => {
         setResultImage(outputUrl);
         setPreviewImage(outputUrl);
       } else {
-        toast.error('Failed to remove background');
+        throw new Error('No outputUrl returned from backend');
       }
       queryClient.invalidateQueries({ queryKey: [queryKeys.credits] });
     } catch (error) {
-      const errorMessage =
-        error instanceof AxiosError
-          ? error?.response?.data?.message
-          : 'Failed to remove background';
-      toast.error(errorMessage);
+      console.warn('Backend removal failed, falling back to client-side background removal...', error);
+      toast.info('Using browser-based background removal (no server required)');
+      
+      try {
+        const { removeBackground } = await import('@imgly/background-removal');
+        const resultBlob = await removeBackground(file, {
+          progress: (key: string, current: number, total: number) => {
+            const percent = Math.round((current / total) * 100);
+            setProgress(percent);
+          }
+        });
+        
+        // Save to local IndexedDB history
+        const id = Math.random().toString(36).substring(7);
+        await localDB.saveHistory(id, file, resultBlob);
+        
+        const outputUrl = URL.createObjectURL(resultBlob);
+        setResultImage(outputUrl);
+        setPreviewImage(outputUrl);
+        toast.success('Background removed successfully in-browser!');
+      } catch (clientError: any) {
+        console.error('Client-side background removal failed:', clientError);
+        toast.error(clientError?.message || 'Failed to remove background client-side');
+      }
     } finally {
       setIsLoading(false);
     }
